@@ -25,19 +25,6 @@ def init_env():
 
 init_env()
 
-
-def get_pid(cmd_filter):
-    ps_proc = subprocess.Popen(shlex.split('ps -ef'), stdout=subprocess.PIPE)
-    grep_proc = subprocess.Popen(shlex.split('grep {}'.format(cmd_filter)), stdin=ps_proc.stdout,
-                                 stdout=subprocess.PIPE)
-    grep_v_proc = subprocess.Popen(shlex.split('grep -v grep'), stdin=grep_proc.stdout, stdout=subprocess.PIPE)
-    awk_proc = subprocess.Popen(shlex.split('awk "{print $2}"'), stdin=grep_v_proc.stdout, stdout=subprocess.PIPE)
-
-    pid = awk_proc.stdout.readline().decode('utf-8').strip()
-    awk_proc.communicate()
-    return pid
-
-
 def run_cmd(cmd_str, env, output=None):
     proc = subprocess.Popen(shlex.split(cmd_str), env=env, stdout=output)
     proc.communicate()
@@ -55,10 +42,26 @@ def run_lidar_cmd():
 mp_manager = Manager()
 perf_results = mp_manager.list()
 
+def get_process_until_ready(proc_name):
+    for p in psutil.process_iter(["name", "exe", "cmdline"]):
+        if proc_name in p.info['name']:
+            print(proc_name)
+            return p
+    return None
 
-def record_perf(pid):
-    print('record perf for ', pid)
-    p = psutil.Process(int(pid))
+def record_perf(proc_name):
+    print('record perf for ', proc_name)
+    p = None
+    n = 0
+    while not p:
+        p = get_process_until_ready(proc_name)
+        sleep(1)
+        n += 1
+        if n >= 10:
+            break
+    if not p:
+        raise(Exception("Failed to find process by " + proc_name))
+
     while True:
         meminfo = p.memory_info()
         rss_mb = round(meminfo.rss / 1024 / 1024, 2)
@@ -73,7 +76,7 @@ slam_proc = Process(target=run_lidar_cmd)
 slam_proc.start()
 sleep(2)
 
-top_proc = Process(target=record_perf, args=(get_pid('scanmatcher_node'),))
+top_proc = Process(target=record_perf, args=('scanmatcher_node',))
 top_proc.start()
 
 playbag_proc = Process(target=run_cmd,
