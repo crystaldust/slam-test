@@ -25,22 +25,15 @@ def init_env():
 
 init_env()
 
+
 def run_cmd(cmd_str, env, output=None):
     proc = subprocess.Popen(shlex.split(cmd_str), env=env, stdout=output)
     proc.communicate()
 
 
-# pipe to subprocessing.PIPE will hide the 'SIGINT' handling error on console screen
-lidar_proc = subprocess.Popen(shlex.split('ros2 launch lidarslam lidarslam_eloquent.launch.py'), env=os.environ.copy(),
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
-
-def run_lidar_cmd():
-    lidar_proc.communicate()
-
-
 mp_manager = Manager()
 perf_results = mp_manager.list()
+
 
 def get_process_until_ready(proc_name):
     for p in psutil.process_iter(["name", "exe", "cmdline"]):
@@ -49,6 +42,9 @@ def get_process_until_ready(proc_name):
             return p
     return None
 
+
+# TODO Make record_perf a customized multiprocessing.Process
+# When terminate is called, finish the infinite loop and record the result
 def record_perf(proc_name):
     print('record perf for ', proc_name)
     p = None
@@ -60,7 +56,7 @@ def record_perf(proc_name):
         if n >= 10:
             break
     if not p:
-        raise(Exception("Failed to find process by " + proc_name))
+        raise (Exception("Failed to find process by " + proc_name))
 
     while True:
         meminfo = p.memory_info()
@@ -72,27 +68,25 @@ def record_perf(proc_name):
 
 
 # Here we run the commands!
-slam_proc = Process(target=run_lidar_cmd)
-slam_proc.start()
-sleep(2)
+lidar_proc = subprocess.Popen(shlex.split('ros2 launch lidarslam lidarslam_eloquent.launch.py'), env=os.environ.copy(),
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-top_proc = Process(target=record_perf, args=('scanmatcher_node',))
-top_proc.start()
 
-playbag_proc = Process(target=run_cmd,
-                       args=('ros2 bag play -s rosbag_v2 ./dataset/2018-05-18-14-50-12_1.bag', os.environ.copy()))
-playbag_proc.start()
-playbag_proc.join()
+perf_record_proc = Process(target=record_perf, args=('scanmatcher_node',))
+perf_record_proc.start()
 
-print('wait 10 secs for top command')
+playbag_proc = subprocess.Popen(shlex.split('ros2 bag play -s rosbag_v2 ./dataset/2018-05-18-14-50-12_1.bag',
+                                os.environ.copy()), stdout=subprocess.PIPE)
+playbag_proc.communicate()
+
+print('wait another 10 secs for performance monitoring')
 sleep(10)
-top_proc.terminate()
+perf_record_proc.terminate()
 
-# Notice: the ros2 launch will handle SIGINT(simulate a ctrl-c) and release all resources it occupied.
-slam_proc.terminate()
+# Notice: ros2 launch will handle SIGINT(simulate a ctrl-c) and release all resources it occupied.
 lidar_proc.send_signal(signal.SIGINT)
 
-with open('./perf.log', 'w') as f:
+with open('./scanmatcher_node.perf.log', 'w') as f:
     content_str = '\n'.join(['{0}\t{1}'.format(*t) for t in perf_results])
     f.write(content_str)
 print('finished')
