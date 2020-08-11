@@ -31,52 +31,69 @@ def run_cmd(cmd_str, env, output=None):
     proc.communicate()
 
 
-mp_manager = Manager()
-perf_results = mp_manager.list()
+class PerfRecordProcess(Process):
+    manager = Manager()
 
+    @classmethod
+    def get_process_by_name(cls, proc_name):
+        for p in psutil.process_iter(["name", "exe", "cmdline"]):
+            if proc_name in p.info['name']:
+                return p
+        return None
 
-def get_process_until_ready(proc_name):
-    for p in psutil.process_iter(["name", "exe", "cmdline"]):
-        if proc_name in p.info['name']:
-            print(proc_name)
-            return p
-    return None
+    def __init__(self, proc_name, interval=2):
+        super().__init__(target=self.record_perf)
+        self.proc_name = proc_name
+        self.is_recording = False
+        self.interval = interval
+        self.perf_results = PerfRecordProcess.manager.list()
 
+    def terminate(self) -> None:
+        self.is_recording = False
+        with open('./{}.perf.log'.format(self.proc_name), 'w') as f:
+            content_str = '\n'.join(['{0}\t{1}'.format(*t) for t in self.perf_results])
+            f.write(content_str)
 
-# TODO Make record_perf a customized multiprocessing.Process
-# When terminate is called, finish the infinite loop and record the result
-def record_perf(proc_name):
-    print('record perf for ', proc_name)
-    p = None
-    n = 0
-    while not p:
-        p = get_process_until_ready(proc_name)
-        sleep(1)
-        n += 1
-        if n >= 10:
-            break
-    if not p:
-        raise (Exception("Failed to find process by " + proc_name))
+        # terminate the process until recording is finished
+        print('finished')
+        super().terminate()
 
-    while True:
-        meminfo = p.memory_info()
-        rss_mb = round(meminfo.rss / 1024 / 1024, 2)
-        cpu_percent = p.cpu_percent()
-        print('rss(MiB): {}, cpu%: {}'.format(rss_mb, cpu_percent))
-        perf_results.append((meminfo.rss, cpu_percent))
-        sleep(2)
+    def start(self) -> None:
+        self.is_recording = True
+        super().start()
+
+    def record_perf(self):
+        print('record perf for ', self.proc_name)
+        p = None
+        n = 0
+        while not p:
+            p = PerfRecordProcess.get_process_by_name(self.proc_name)
+            sleep(1)
+            n += 1
+            if n >= 10:
+                break
+        if not p:
+            raise (Exception("Failed to find process by " + self.proc_name))
+
+        while self.is_recording:
+            mem_info = p.memory_info()
+            rss_mb = round(mem_info.rss / 1024 / 1024, 2)
+            cpu_percent = p.cpu_percent()
+            print('rss(MiB): {}, cpu%: {}'.format(rss_mb, cpu_percent))
+            self.perf_results.append((mem_info.rss, cpu_percent))
+            sleep(self.interval)
+        print('not recording, exit perf record func')
 
 
 # Here we run the commands!
 lidar_proc = subprocess.Popen(shlex.split('ros2 launch lidarslam lidarslam_eloquent.launch.py'), env=os.environ.copy(),
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-
-perf_record_proc = Process(target=record_perf, args=('scanmatcher_node',))
+perf_record_proc = PerfRecordProcess('scanmatcher_node')
 perf_record_proc.start()
 
 playbag_proc = subprocess.Popen(shlex.split('ros2 bag play -s rosbag_v2 ./dataset/2018-05-18-14-50-12_1.bag',
-                                os.environ.copy()), stdout=subprocess.PIPE)
+                                            os.environ.copy()), stdout=subprocess.PIPE)
 playbag_proc.communicate()
 
 print('wait another 10 secs for performance monitoring')
@@ -85,8 +102,3 @@ perf_record_proc.terminate()
 
 # Notice: ros2 launch will handle SIGINT(simulate a ctrl-c) and release all resources it occupied.
 lidar_proc.send_signal(signal.SIGINT)
-
-with open('./scanmatcher_node.perf.log', 'w') as f:
-    content_str = '\n'.join(['{0}\t{1}'.format(*t) for t in perf_results])
-    f.write(content_str)
-print('finished')
